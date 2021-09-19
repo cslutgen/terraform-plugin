@@ -23,6 +23,7 @@ import jenkins.model.Jenkins;
 
 import org.jenkinsci.Symbol;
 import org.kohsuke.stapler.DataBoundConstructor;
+import org.jenkinsci.remoting.RoleChecker;
 
 import java.util.List;
 import java.util.Collections;
@@ -68,6 +69,9 @@ public class TerraformInstallation extends ToolInstallation implements Environme
     
     public String getExecutablePath(final Launcher launcher) throws IOException, InterruptedException {
         return launcher.getChannel().call(new Callable<String, IOException>() {
+            public void checkRoles(RoleChecker checker) {
+            }
+
             public String call() throws IOException {
 
                 FilePath homeDirectory = new FilePath(new File(getHome()));

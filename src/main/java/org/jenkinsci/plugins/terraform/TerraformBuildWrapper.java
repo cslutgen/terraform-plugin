@@ -8,44 +8,29 @@ import hudson.Extension;
 import hudson.CopyOnWrite;
 
 import hudson.util.ListBoxModel;
-import hudson.util.FormValidation;
 import hudson.util.ArgumentListBuilder;
 
-import hudson.model.Result;
 import hudson.model.Computer;
 import hudson.model.AbstractBuild;
 import hudson.model.BuildListener;
 import hudson.model.AbstractProject;
 import hudson.model.EnvironmentContributingAction;
 
-import hudson.model.Descriptor.FormException;
-
-import hudson.tasks.Recorder;
-import hudson.tasks.Publisher;
 import hudson.tasks.BuildWrapper;
-import hudson.tasks.BuildStepMonitor;
-import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.BuildWrapperDescriptor;
 
-import org.kohsuke.stapler.StaplerRequest;
-import org.kohsuke.stapler.QueryParameter;
-import org.kohsuke.stapler.DataBoundSetter;
+import org.jenkins_ci.plugins.run_condition.core.BooleanCondition;
+import org.jenkinsci.plugins.tokenmacro.TokenMacro;
 import org.kohsuke.stapler.DataBoundConstructor;
 
-import net.sf.json.JSONObject;
-
-import java.util.Map;
-
+import java.util.LinkedList;
+import java.util.List;
 import java.util.logging.Logger;
-
-import java.util.regex.Pattern;
-import java.util.regex.Matcher;
 
 import java.io.PrintWriter;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.FileNotFoundException;
-
 
 class VariableInjectionAction implements EnvironmentContributingAction {
 
@@ -81,12 +66,18 @@ class VariableInjectionAction implements EnvironmentContributingAction {
 
 public class TerraformBuildWrapper extends BuildWrapper {
 
+    private final Configuration config;
+    private final String destroyCondition;
+    private final String environmentVariables;
+    private final String terraformInstallation;
     private final String variables;
     private final boolean doDestroy;
+    private final boolean doInit;
     private final boolean doGetUpdate;
     private final boolean doNotApply;
-    private final Configuration config;
-    private final String terraformInstallation;
+    private final boolean doNotLock;
+    private final boolean useColorizedStdout;
+    private final boolean useRemoteState;
     private FilePath stateFile;
     private FilePath configFile;
     private FilePath variablesFile;
@@ -94,18 +85,38 @@ public class TerraformBuildWrapper extends BuildWrapper {
     private FilePath workingDirectory;
 
     private static final String WORK_DIR_NAME = "terraform-plugin";
+    private static final String CONFIG_FILE_NAME = "terraform";
     private static final String STATE_FILE_NAME = "terraform-plugin.tfstate";
+    private static final String ENVIRONMENT_VARIABLES = "TF_IN_AUTOMATION=true";
     private static final Logger LOGGER = Logger.getLogger(TerraformBuildWrapper.class.getName());
 
 
     @DataBoundConstructor
-    public TerraformBuildWrapper(String variables, String terraformInstallation, boolean doGetUpdate, boolean doNotApply, boolean doDestroy, Configuration config) {
+    public TerraformBuildWrapper(
+            Configuration config,
+            boolean doDestroy,
+            boolean doGetUpdate,
+            boolean doInit,
+            boolean doNotApply,
+            boolean doNotLock,
+            boolean useColorizedStdout,
+            boolean useRemoteState,
+            String destroyCondition,
+            String environmentVariables,
+            String terraformInstallation,
+            String variables) {
         this.config = config;
         this.doDestroy = doDestroy;
         this.doGetUpdate = doGetUpdate;
+        this.doInit = doInit;
         this.doNotApply = doNotApply;
-        this.variables = variables;
+        this.doNotLock = doNotLock;
+        this.useColorizedStdout = useColorizedStdout;
+        this.useRemoteState = useRemoteState;
+        this.destroyCondition = destroyCondition;
+        this.environmentVariables = environmentVariables;
         this.terraformInstallation = terraformInstallation;
+        this.variables = variables == null ? "" : variables;
     }
 
 
@@ -134,6 +145,14 @@ public class TerraformBuildWrapper extends BuildWrapper {
     }
 
 
+    public String getTerraformWorkspace() { return this.config.getTerraformWorkspace(); }
+
+
+    public boolean getUseTerraformWorkspace() {
+        return this.config.getUseTerraformWorkspace();
+    }
+
+
     public boolean doGetUpdate() {
         return this.doGetUpdate;
     }
@@ -144,18 +163,18 @@ public class TerraformBuildWrapper extends BuildWrapper {
     }
 
 
-    public boolean doNotApply() {
+    public boolean getDoInit() {
+        return this.doInit;
+    }
+
+
+    public boolean getDoNotApply() {
         return this.doNotApply;
     }
 
 
-    public boolean getdoNotApply() {
-        return this.doNotApply;
-    }
-
-
-    public boolean doDestroy() {
-        return this.doDestroy;
+    public boolean getDoNotLock() {
+        return this.doNotLock;
     }
 
 
@@ -164,13 +183,29 @@ public class TerraformBuildWrapper extends BuildWrapper {
     }
 
 
+    public boolean getUseColorizedStdout() {
+        return this.useColorizedStdout;
+    }
+
+
+    public boolean getUseRemoteState() {
+        return this.useRemoteState;
+    }
+
+
+    public String getDestroyCondition() { return this.destroyCondition == null ? "" : this.destroyCondition; }
+
+
+    public String getEnvironmentVariables() { return this.environmentVariables == null ? "" : this.environmentVariables; }
+
+
     public String getTerraformInstallation() {
         return this.terraformInstallation;
     }
 
 
     public String getVariables() {
-        return this.variables;
+        return this.variables == null ? "" : this.variables;
     }
 
 
@@ -202,28 +237,131 @@ public class TerraformBuildWrapper extends BuildWrapper {
         return executablePath;
     }
 
+
     public void executeGet(AbstractBuild build, final Launcher launcher, final BuildListener listener) throws Exception {
         ArgumentListBuilder args = new ArgumentListBuilder();
         EnvVars env = build.getEnvironment(listener);
-        setupWorkspace(build, env);
 
         String executable = getExecutable(env, listener, launcher);
         args.add(executable);
 
         args.add("get");
 
-        if (doGetUpdate) {
+        if (getDoGetUpdate()) {
             args.add("-update");
         }
 
-        LOGGER.info("Launching Terraform Get: "+args.toString());
+        if (!getUseColorizedStdout()) {
+            args.add("-no-color");
+        }
 
-        int result = launcher.launch().pwd(workspacePath.getRemote()).cmds(args).stdout(listener).join();
+        LOGGER.info("Launching Terraform get: "+args.toString());
+
+        int result = launcher.launch()
+                .pwd(workspacePath)
+                .cmds(args)
+                .stdout(listener)
+                .envs(promoteEnvVars(env))
+                .join();
 
         if (result != 0) {
-            throw new Exception("Terraform Get failed: "+ result);
+            throw new Exception("Terraform get failed: "+ result);
         }
     }
+
+
+    public void executeInit(AbstractBuild build, final Launcher launcher, final BuildListener listener) throws Exception {
+        ArgumentListBuilder args = new ArgumentListBuilder();
+        EnvVars env = build.getEnvironment(listener);
+
+        String executable = getExecutable(env, listener, launcher);
+        args.add(executable);
+
+        args.add("init");
+
+        args.add("-input=false");
+
+        if (doGetUpdate) {
+            args.add("-upgrade=true");
+        }
+
+        if (getDoNotLock()) {
+            args.add("-lock=false");
+        }
+
+        if (!getUseColorizedStdout()) {
+            args.add("-no-color");
+        }
+
+        LOGGER.info("Launching Terraform init: " + args.toString());
+
+        int result = launcher.launch()
+                .pwd(workspacePath)
+                .cmds(args)
+                .stdout(listener)
+                .envs(promoteEnvVars(env))
+                .join();
+
+        if (result != 0) {
+            throw new Exception("Terraform init failed: "+ result);
+        }
+    }
+
+
+    public void executeWorkspace(AbstractBuild build, final Launcher launcher, final BuildListener listener, final String command) throws Exception {
+        String workspace = TokenMacro.expandAll(build, listener, getTerraformWorkspace());
+
+        // Ignore workspace management if not configured.
+        if (workspace.isEmpty()) {
+            return;
+        }
+
+        // Don't "new" or "delete" the "default" workspace.
+        if (!command.equals("select") && workspace.equals("default")) {
+            return;
+        }
+
+        // Recursive request to create a new workspace prior to selecting. If already exists, this is benign.
+        if (command.equals("select")) {
+            executeWorkspace(build, launcher, listener, "new");
+        }
+
+        ArgumentListBuilder args = new ArgumentListBuilder();
+        EnvVars env = build.getEnvironment(listener);
+
+        String executable = getExecutable(env, listener, launcher);
+        args.add(executable);
+
+        args.add("workspace");
+
+        args.add(command);
+
+        if (command == "new" || command == "delete" ) {
+            if (getDoNotLock()) {
+                args.add("-lock=false");
+            }
+        }
+
+        if (command == "delete") {
+            args.add("-force");
+        }
+
+        if (command == "select") {
+            build.addAction(new VariableInjectionAction("TF_WORKSPACE", workspace));
+        }
+
+        args.add(workspace);
+
+        LOGGER.info("Launching Terraform workspace: "+args.toString());
+
+        launcher.launch()
+                .pwd(workspacePath)
+                .cmds(args)
+                .stdout(listener)
+                .envs(promoteEnvVars(env))
+                .join();
+    }
+
 
     public void executeApply(AbstractBuild build, final Launcher launcher, final BuildListener listener) throws Exception {
         ArgumentListBuilder args = new ArgumentListBuilder();
@@ -234,30 +372,53 @@ public class TerraformBuildWrapper extends BuildWrapper {
 
         args.add("apply");
         args.add("-input=false");
-        args.add("-state="+stateFile.getRemote());
+        args.add("-auto-approve");
+        if (!getUseRemoteState()) {
+            args.add("-state="+stateFile.getRemote());
+        }
+
+        if (getDoNotLock()) {
+            args.add("-lock=false");
+        }
 
         if (!isNullOrEmpty(getVariables())) {
-            variablesFile = workingDirectory.createTextTempFile("variables", ".tfvars", evalEnvVars(getVariables(), env));
+            variablesFile = workingDirectory.createTextTempFile("variables", ".tfvars", TokenMacro.expandAll(build, listener, getVariables()));
             args.add("-var-file="+variablesFile.getRemote());
         }
 
-        LOGGER.info("Launching Terraform Apply: "+args.toString());
+        if (!getUseColorizedStdout()) {
+            args.add("-no-color");
+        }
 
-        int result = launcher.launch().pwd(workspacePath.getRemote()).cmds(args).stdout(listener).join();
+        LOGGER.info("Launching Terraform apply: "+args.toString());
+
+        int result = launcher.launch()
+                .pwd(workspacePath)
+                .cmds(args)
+                .stdout(listener)
+                .envs(promoteEnvVars(env))
+                .join();
 
         if (result != 0) {
-            throw new Exception("Terraform Apply failed: "+ result);
+            throw new Exception("Terraform apply failed: "+ result);
         }
     }
 
     @Override
     public Environment setUp(AbstractBuild build, final Launcher launcher, final BuildListener listener) throws IOException, InterruptedException {
         try {
-            executeGet(build, launcher, listener);
             // get executable and var-file from environment
             EnvVars env = build.getEnvironment(listener);
+            setupWorkspace(build, listener, env);
+
+            if (getMode() == Configuration.Mode.FILE) {
+                executeWorkspace(build, launcher, listener, "select");
+            }
+
             String executable = getExecutable(env, listener, launcher);
-            variablesFile = workingDirectory.createTextTempFile("variables", ".tfvars", evalEnvVars(getVariables(), env));
+            String variables = getVariables();
+            variables = TokenMacro.expandAll(build, listener, variables);
+            variablesFile = workingDirectory.createTextTempFile("variables", ".tfvars", variables);
             // Create actions to inject environment variables
             VariableInjectionAction tfbinAction = new VariableInjectionAction("TF_BIN", executable);
             VariableInjectionAction tfvarAction = new VariableInjectionAction("TF_VAR", variablesFile.getRemote());
@@ -265,7 +426,13 @@ public class TerraformBuildWrapper extends BuildWrapper {
             build.addAction(tfbinAction);
             build.addAction(tfvarAction);
 
-            if (! doNotApply) {
+            if (getDoInit()) {
+                executeInit(build, launcher, listener);
+            }
+
+            executeGet(build, launcher, listener);
+
+            if (! getDoNotApply()) {
               executeApply(build, launcher, listener);
             }
         } catch (Exception ex) {
@@ -280,36 +447,54 @@ public class TerraformBuildWrapper extends BuildWrapper {
             @Override
             public boolean tearDown(AbstractBuild build, BuildListener listener) throws IOException, InterruptedException {
 
-                if (doDestroy()) {
-
-                    ArgumentListBuilder args = new ArgumentListBuilder();
+                if (getDoDestroy()) {
 
                     try {
-                        EnvVars env = build.getEnvironment(listener);
+                        String condition = getDestroyCondition();
+                        boolean destroyConditionPass = condition.isEmpty() ||
+                                new BooleanCondition(condition).runPerform(build, listener);
 
-                        args.add(getExecutable(env, listener, launcher));
+                        if (destroyConditionPass) {
+                            EnvVars env = build.getEnvironment(listener);
 
-                        args.add("destroy");
+                            ArgumentListBuilder args = new ArgumentListBuilder();
+                            args.add(getExecutable(env, listener, launcher));
 
-                        args.add("-input=false");
+                            args.add("destroy");
 
-                        args.add("-state="+stateFile.getRemote());
+                            args.add("-input=false");
+                            args.add("-auto-approve");
 
-                        args.add("--force");
+                            if (!getUseRemoteState()) {
+                                args.add("-state=" + stateFile.getRemote());
+                            }
 
-                        if (!isNullOrEmpty(getVariables())) {
-                            args.add("-var-file="+variablesFile.getRemote());
+                            if (!isNullOrEmpty(getVariables())) {
+                                args.add("-var-file=" + variablesFile.getRemote());
+                            }
+
+                            if (!getUseColorizedStdout()) {
+                                args.add("-no-color");
+                            }
+
+                            LOGGER.info("Launching Terraform destroy: " + args.toString());
+
+                            int result = launcher.launch()
+                                    .pwd(workspacePath)
+                                    .cmds(args)
+                                    .stdout(listener)
+                                    .envs(promoteEnvVars(env))
+                                    .join();
+
+                            if (result != 0) {
+                                deleteTemporaryFiles();
+                                return false;
+                            }
+
+                            if (getMode() == Configuration.Mode.FILE) {
+                                executeWorkspace(build, launcher, listener, "delete");
+                            }
                         }
-
-                        LOGGER.info("Launching Terraform: "+args.toString());
-
-                        int result = launcher.launch().pwd(workspacePath.getRemote()).cmds(args).stdout(listener).join();
-
-                        if (result != 0) {
-                            deleteTemporaryFiles();
-                            return false;
-                        }
-
                     } catch (Exception ex) {
                         LOGGER.severe(exceptionToString(ex));
                         listener.fatalError(exceptionToString(ex));
@@ -326,53 +511,74 @@ public class TerraformBuildWrapper extends BuildWrapper {
     }
 
 
-    private String evalEnvVars(String input, EnvVars env) throws Exception {
-        String envPattern = "\\$([A-Z-a-z_0-9]+)";
+    private String[] promoteEnvVars(EnvVars env) {
+        String executionEnvironment = (environmentVariables == null ? "" : environmentVariables) + "\n" + ENVIRONMENT_VARIABLES;
 
-        Pattern expr = Pattern.compile(envPattern);
+        // Split flat string into array of line-delimited string of name=value or name variables.
+        String envs[] = executionEnvironment.split("\\r?\\n\\r?");
 
-        Matcher matcher = expr.matcher(input);
-
-        String output = input;
-
-        while (matcher.find()) {
-            String envFound = env.get(matcher.group(1));
-
-            if (envFound != null) {
-               output = output.replace("$"+matcher.group(1), envFound);
+        List<String> result = new LinkedList<>();
+        // In-place replacement of <name> with build env value of matching name. If both
+        // execution <environmentVariables> and build <env> have variable, the environmentVariable
+        // wins as it is more explicitly scoped.
+        for (int i = 0; i < envs.length; ++i) {
+            String var = envs[i];
+            if (var.isEmpty()) continue;
+            if (var.indexOf('=') == -1) {
+                String value = env.get(var);
+                if (value != null) {
+                    var = var + '=' + value;
+                }
             }
+
+            result.add(var);
         }
 
-        return output;
+        return result.toArray(new String[0]);
     }
 
 
-    private void setupWorkspace(AbstractBuild build, EnvVars env) throws FileNotFoundException, Exception {
-        workingDirectory = new FilePath(build.getWorkspace(), WORK_DIR_NAME);
-
-        stateFile = new FilePath(workingDirectory, STATE_FILE_NAME);
-
+    private void setupWorkspace(AbstractBuild build, final BuildListener listener, EnvVars env) throws FileNotFoundException, Exception {
         switch (getMode()) {
             case INLINE:
-                configFile = workingDirectory.createTextTempFile("terraform", ".tf", evalEnvVars(getInlineConfig(), env));
+                workingDirectory = new FilePath(build.getWorkspace(), WORK_DIR_NAME);
+                String inlineConfig = getInlineConfig();
+                inlineConfig = TokenMacro.expandAll(build, listener, inlineConfig);
+                configFile = workingDirectory.createTextTempFile(CONFIG_FILE_NAME, ".tf", inlineConfig);
                 workspacePath = workingDirectory;
                 if (configFile == null || !configFile.exists()) {
                     throw new FileNotFoundException(Messages.ConfigurationNotCreated());
                 }
                 break;
             case FILE:
-                if (!isNullOrEmpty(getFileConfig())) {
-                    workspacePath = new FilePath(build.getWorkspace(), getFileConfig());
+                String configPath = getFileConfig();
+                if (!isNullOrEmpty(configPath)) {
+                    configPath = TokenMacro.expandAll(build, listener, configPath);
+                    workspacePath = new FilePath(build.getWorkspace(), configPath);
                     if (!workspacePath.isDirectory()) {
                         throw new FileNotFoundException(Messages.ConfigurationPathNotFound(workspacePath));
                     }
                 } else {
                     workspacePath = build.getWorkspace();
                 }
+
+                if (getUseTerraformWorkspace()) {
+                    workingDirectory = new FilePath(build.getWorkspace(), configPath + "/.terraform");
+                }
+                else {
+                    workingDirectory = new FilePath(build.getWorkspace(), WORK_DIR_NAME);
+                }
+
                 break;
             default:
                 throw new Exception(Messages.InvalidConfigMode());
         }
+
+        if (!getUseRemoteState()) {
+            stateFile = new FilePath(workingDirectory, STATE_FILE_NAME);
+        }
+
+        build.addAction(new VariableInjectionAction("TF_CWD", workspacePath.getRemote()));
     }
 
 
@@ -447,6 +653,13 @@ public class TerraformBuildWrapper extends BuildWrapper {
             return result;
         }
 
+        public boolean isDoDestoryConfigChecked(TerraformBuildWrapper instance) {
+            boolean result = false;
+            if (instance != null)
+                return (instance.getDoDestroy());
+
+            return result;
+        }
 
         public boolean isApplicable(AbstractProject<?, ?> project) {
             return true;

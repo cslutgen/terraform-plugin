@@ -1,0 +1,17 @@
+<div>
+    <p>If specified, terraform workspaces are utilized with the specified name by executing the following commands.
+        If the workspace does not exist, it will be created.</p>
+    <p><span style="font-weight: bold; font-style: italic">terraform workspace new "name"</span></p>
+    <p><span style="font-weight: bold; font-style: italic">terraform workspace select "name"</span></p>
+    <p></p>
+    <p>If specified along with "Destroy on Build Completion", the workspace will also be deleted along with the
+    managed resources.</p>
+    <p>Workspaces can be used with supporting remote backends. If not, the Jenkins workspace is used and must
+    be properly protected from deletion and sharing to allow multiple Terraform workspaces to coexist.</p>
+    <p>Use blank to disable workspaces selection, i.e. terraform workspace will not be called.</p>
+    <p>Use "default" select the default terraform workspace.</p>
+    <p>Workspaces allow multiple users, environments, configurations to share the same configuration
+        while storing unique state per workspace.</p>
+    <p>For more information, see: <a href="https://www.terraform.io/docs/language/state/workspaces.html">Terraform Workspaces</a>.</p>
+    <p>See <a href="https://plugins.jenkins.io/token-macro/">Token Macros plugin</a>.</p>
+</div>

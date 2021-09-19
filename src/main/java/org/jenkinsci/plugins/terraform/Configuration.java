@@ -10,6 +10,8 @@ public class Configuration {
     private final String value;
     private final String fileConfig;
     private final String inlineConfig;
+    private final String terraformWorkspace;
+    private final boolean useTerraformWorkspace;
     private Mode mode;
 
     public enum Mode {
@@ -18,10 +20,17 @@ public class Configuration {
 
 
     @DataBoundConstructor
-    public Configuration(String value, String inlineConfig, String fileConfig) {
+    public Configuration(
+            String value,
+            String inlineConfig,
+            String fileConfig,
+            String terraformWorkspace,
+            boolean useTerraformWorkspace) {
         this.value = value;
         this.fileConfig = fileConfig;
         this.inlineConfig = inlineConfig;
+        this.terraformWorkspace = terraformWorkspace;
+        this.useTerraformWorkspace = useTerraformWorkspace;
         this.mode = Mode.valueOf(this.value.trim().toUpperCase());
     }
 
@@ -37,6 +46,16 @@ public class Configuration {
 
     public String getFileConfig() {
         return this.fileConfig;
+    }
+
+
+    public String getTerraformWorkspace() {
+        return this.terraformWorkspace == null ? "" : this.terraformWorkspace;
+    }
+
+
+    public boolean getUseTerraformWorkspace() {
+        return this.useTerraformWorkspace;
     }
 
 

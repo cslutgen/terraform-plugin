@@ -1,0 +1,16 @@
+<div>
+    <p>These variables will be prompted into the environment that executes the terraform command.
+        Some backend providers require additional environment variables to pass configuration items that should not
+        be injected into the general build environment. These environment variables are scoped to only the
+        execution the terraform command.
+    </p>
+    <p>List each variable in VAR=value form on separate lines. If value contains space, surround it with appropriate
+        double quotation marks.</p>
+    <p>Variables may also be promoted from the build environment to the terraform execution environment by listing
+       them by name here. For instance, using the
+       <a href="https://plugins.jenkins.io/envinject">Environment Injector Plugin</a> to inject user defined
+       environment variables into the build script. Then, list those variables by name here to promote into
+       the terraform command execution.
+    </p>
+    <p>These variables are common to all terraform commands.</p>
+</div>
